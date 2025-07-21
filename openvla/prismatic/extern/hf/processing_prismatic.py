@@ -33,14 +33,14 @@ class PrismaticImageProcessor(ImageProcessingMixin):
     model_input_names: ClassVar[List[str]] = ["pixel_values"]
 
     def __init__(
-            self,
-            use_fused_vision_backbone: bool = False,
-            image_resize_strategy: str = "letterbox",
-            input_sizes: Optional[List[Tuple[int, int, int]]] = None,
-            interpolations: Optional[List[str]] = None,
-            means: Optional[List[Tuple[float, float, float]]] = None,
-            stds: Optional[List[Tuple[float, float, float]]] = None,
-            **kwargs: str,
+        self,
+        use_fused_vision_backbone: bool = False,
+        image_resize_strategy: str = "letterbox",
+        input_sizes: Optional[List[Tuple[int, int, int]]] = None,
+        interpolations: Optional[List[str]] = None,
+        means: Optional[List[Tuple[float, float, float]]] = None,
+        stds: Optional[List[Tuple[float, float, float]]] = None,
+        **kwargs: str,
     ) -> None:
         """
         Initialize a PrismaticImageProcessor as a wrapper around a torchvision transform; this transform will be

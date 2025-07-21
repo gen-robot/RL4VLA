@@ -28,7 +28,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 class Args:
     env_id: Annotated[str, tyro.conf.arg(aliases=["-e"])] = "PutCarrotOnPlateInScene-v1"
     """The environment ID of the task you want to simulate. Can be one of
-    PutCarrotOnPlateInScene-v1, PutSpoonOnTableClothInScene-v1, StackGreenCubeOnYellowCubeBakedTexInScene-v1, PutEggplantInBasketScene-v1"""
+    PutCarrotOnPlateInScene-v1, 
+    PutSpoonOnTableClothInScene-v1, 
+    StackGreenCubeOnYellowCubeBakedTexInScene-v1, 
+    PutEggplantInBasketScene-v1"""
 
     """Number of environments to run. With more than 1 environment the environment will use the GPU backend 
     which runs faster enabling faster large-scale evaluations. Note that the overall behavior of the simulation
@@ -56,9 +59,9 @@ class Args:
     buffer_lambda: float = 0.95
 
     # vla
-    vla_path: str = "openvla/openvla-7b"
+    vla_path: str = "Haozhan72/Openvla-oft-SFT-libero-spatial-traj1"
     vla_unnorm_key: str = "bridge_orig"
-    vla_load_path: str = ""
+    vla_load_path: str = "../openvla_oft/checkpoints/warmup/Openvla-oft-SFT-libero-spatial-traj1+warmup+b8+lr-0.0005+lora-r32+dropout-0.0--image_aug--2000_chkpt"
     vla_lora_rank: int = 32
 
     vla_lr: float = 1e-4
@@ -80,7 +83,7 @@ class Args:
     only_render: bool = False
     render_info: bool = False
 
-
+ACTION_CHUNCK_SIZE = 8  # number of actions to execute in one step, for efficiency
 
 class Runner:
     def __init__(self, all_args: Args):
@@ -93,11 +96,20 @@ class Runner:
         np.random.seed(self.args.seed)
         random.seed(self.args.seed)
         torch.manual_seed(self.args.seed)
+        from inputimeout import inputimeout, TimeoutOccurred
 
+        project_default = "RLVLA_oft_first_try"
+        if all_args.wandb:
+            try:
+                project_input = inputimeout(prompt=f"Enter the project name for wandb (default: {project_default}): ", timeout=5)
+                if project_input.strip():
+                    project_default = project_input
+            except TimeoutOccurred:
+                print(f"\nNo input received. Using default project name: {project_default}")
         # set wandb
         wandb.init(
             config=all_args.__dict__,
-            project="RLVLA",
+            project=project_default,
             name=self.args.name,
             mode="online" if self.args.wandb else "offline",
         )
@@ -108,7 +120,8 @@ class Runner:
         yaml.dump(all_args.__dict__, open(self.glob_dir / "config.yaml", "w"))
 
         # policy
-        from simpler_env.policies.openvla.openvla_train import OpenVLAPolicy, OpenVLAPPO
+        # from simpler_env.policies.openvla.openvla_train import OpenVLAPolicy, OpenVLAPPO
+        from simpler_env.policies.openvla_oft.openvla_oft_train import OpenVLAPolicy, OpenVLAPPO
         device_id = 0
         device_id_other = 1 if torch.cuda.device_count() > 1 else 0
         self.device = torch.device("cuda:" + str(device_id))
@@ -117,13 +130,14 @@ class Runner:
         self.alg = OpenVLAPPO(all_args, self.policy)
 
         # env
-        unnorm_state = self.policy.vla.get_action_stats(self.args.vla_unnorm_key)
-        self.env = SimlerWrapper(self.args, unnorm_state)
+        # unnorm_state = self.policy.vla.get_action_stats(self.args.vla_unnorm_key)
+        self.env = SimlerWrapper(self.args)
 
         # buffer
         self.buffer = SeparatedReplayBuffer(
             all_args,
             obs_dim=(480, 640, 3),
+            act_chunck=8,
             act_dim=7,
         )
         minibatch_count = self.buffer.get_minibatch_count()
@@ -136,19 +150,22 @@ class Runner:
         values = []
         actions = []
         logprobs = []
+        generated_idss = []
 
         for i in range(0, total_batch, self.args.buffer_inferbatch):
             obs_batch = {k: v[i:i + self.args.buffer_inferbatch] for k, v in obs.items()}
-            value, action, logprob = self.policy.get_action(obs_batch, deterministic)
+            value, action, logprob, generated_ids = self.policy.get_action(obs_batch, deterministic)
             values.append(value)
             actions.append(action)
             logprobs.append(logprob)
+            generated_idss.append(generated_ids)
 
         values = torch.cat(values, dim=0).to(device=self.device)
-        actions = torch.cat(actions, dim=0).to(device=self.device)
+        actions = torch.cat(actions, dim=0)
         logprobs = torch.cat(logprobs, dim=0).to(device=self.device)
+        generated_idss = torch.cat(generated_idss, dim=0).to(device=self.device)
 
-        return values, actions, logprobs
+        return values, actions, logprobs, generated_idss
 
     def collect(self):
         self.policy.prep_rollout()
@@ -156,22 +173,23 @@ class Runner:
         obs_image = self.buffer.obs[self.buffer.step]
         obs_image = torch.tensor(obs_image).to(self.device)
         obs = dict(image=obs_image, task_description=self.buffer.instruction)
-        value, action, logprob = self._get_action(obs)
+        value, action, logprob, generated_ids = self._get_action(obs)
 
-        return value, action, logprob
+        return value, action, logprob, generated_ids
 
     def insert(self, data):
-        obs_img, actions, logprob, value_preds, rewards, done = data
+        obs_img, actions, logprob, value_preds, rewards, done, generated_ids = data
         masks = 1.0 - done.to(torch.float32)
 
         obs_img = obs_img.cpu().numpy()
         actions = actions.to(torch.int32).cpu().numpy()
         logprob = logprob.to(torch.float32).cpu().numpy()
         value_preds = value_preds.to(torch.float32).cpu().numpy()
-        rewards = rewards.cpu().numpy()
+        rewards = rewards.to(torch.float32).cpu().numpy()
+        generated_ids = generated_ids.to(torch.int32).cpu().numpy()
         masks = masks.cpu().numpy()
 
-        self.buffer.insert(obs_img, actions, logprob, value_preds, rewards, masks)
+        self.buffer.insert(obs_img, actions, logprob, value_preds, rewards, masks, generated_ids)
 
     def compute_endup(self):
         self.policy.prep_rollout()
@@ -179,7 +197,7 @@ class Runner:
         obs_image = torch.tensor(self.buffer.obs[-1]).to(self.device)
         obs = dict(image=obs_image, task_description=self.buffer.instruction)
         with torch.no_grad():
-            next_value, _, _ = self._get_action(obs)
+            next_value, _, _, _ = self._get_action(obs)
         next_value = next_value.to(torch.float32).cpu().numpy()
 
         self.buffer.endup(next_value)
@@ -209,7 +227,7 @@ class Runner:
 
         for _ in range(self.args.episode_len):
             obs = dict(image=obs_img, task_description=instruction)
-            value, action, logprob = self._get_action(obs, deterministic=True)
+            value, action, logprob, _ = self._get_action(obs, deterministic=True)
 
             obs_img, reward, done, env_info = self.env.step(action)
 
@@ -250,7 +268,7 @@ class Runner:
 
         for _ in range(self.args.episode_len):
             obs = dict(image=obs_img, task_description=instruction)
-            value, action, logprob = self._get_action(obs, deterministic=True)
+            value, action, logprob, _ = self._get_action(obs, deterministic=True)
 
             obs_img_new, reward, done, env_info = self.env.step(action)
 
@@ -333,10 +351,16 @@ class Runner:
             self.buffer.warmup(obs_img.cpu().numpy(), instruction)
 
             for _ in tqdm(range(self.args.episode_len), desc="rollout"):
-                value, action, logprob = self.collect()
-                obs_img, reward, done, env_info = self.env.step(action)
-
-                data = (obs_img, action, logprob, value, reward, done)
+                value, actions, logprob, generated_ids = self.collect()
+                rewards = torch.zeros_like(value)  # [B, 1]
+                # 如果generated_ids有小于30000的值打断点
+                if torch.any(generated_ids < 30000):
+                    breakpoint()
+                for ac_idx in range(ACTION_CHUNCK_SIZE):
+                    action = actions[:, ac_idx, :]
+                    obs_img, reward, done, env_info = self.env.step(action)
+                    rewards += reward  # [B, 1]
+                data = (obs_img, actions, logprob, value, rewards, done, generated_ids)
                 self.insert(data)
 
                 # info
@@ -345,7 +369,7 @@ class Runner:
                         env_infos[f"{k}"] += v
 
             # steps
-            steps = (episode + 1) * self.args.episode_len * self.args.num_envs
+            steps = (episode + 1) * self.args.episode_len * self.args.num_envs 
             print(pprint.pformat({k: round(np.mean(v), 4) for k, v in env_infos.items()}))
 
             # train and process infos

@@ -5,7 +5,7 @@ from mani_skill.envs.sapien_env import BaseEnv
 
 
 class SimlerWrapper:
-    def __init__(self, all_args, unnorm_state, extra_seed=0):
+    def __init__(self, all_args, unnorm_state=None, extra_seed=0):
         self.args = all_args
         self.unnorm_state = unnorm_state
 
@@ -51,23 +51,26 @@ class SimlerWrapper:
     def _process_action(self, raw_actions: torch.Tensor) -> torch.Tensor:
         action_scale = 1.0
 
-        # Extract predicted action tokens and translate into (normalized) continuous actions
-        pact_token = raw_actions.cpu().numpy()  # [B, dim]
-        dact = 32000 - pact_token  # [B, dim]
-        dact = np.clip(dact - 1, a_min=0, a_max=254)  # [B, dim]
-        normalized_actions = np.asarray([self.bin_centers[da] for da in dact])  # [B, dim]
+        if raw_actions.dtype == torch.float32:
+            raw_action_np = raw_actions.cpu().numpy()  # [B, dim]
+        else:
+            # Extract predicted action tokens and translate into (normalized) continuous actions
+            pact_token = raw_actions.cpu().numpy()  # [B, dim]
+            dact = 32000 - pact_token  # [B, dim]
+            dact = np.clip(dact - 1, a_min=0, a_max=254)  # [B, dim]
+            normalized_actions = np.asarray([self.bin_centers[da] for da in dact])  # [B, dim]
 
-        # Unnormalize actions
-        action_norm_stats = self.unnorm_state
-        mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))  # [dim]
-        mask = np.asarray(mask).reshape(1, -1)  # [1, dim]
-        action_high = np.array(action_norm_stats["q99"]).reshape(1, -1)  # [1, dim]
-        action_low = np.array(action_norm_stats["q01"]).reshape(1, -1)  # [1, dim]
-        raw_action_np = np.where(
-            mask,
-            0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
-            normalized_actions,
-        )
+            # Unnormalize actions
+            action_norm_stats = self.unnorm_state
+            mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))  # [dim]
+            mask = np.asarray(mask).reshape(1, -1)  # [1, dim]
+            action_high = np.array(action_norm_stats["q99"]).reshape(1, -1)  # [1, dim]
+            action_low = np.array(action_norm_stats["q01"]).reshape(1, -1)  # [1, dim]
+            raw_action_np = np.where(
+                mask,
+                0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
+                normalized_actions,
+            )
 
         raw_action = {
             "world_vector": raw_action_np[:, :3],

@@ -1,1 +1,2 @@
 from .kitchen import RoboCasaKitchenEnv
+from .custom_kitchen import RoboCasaCustomKitchenEnv

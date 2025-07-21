@@ -20,3 +20,9 @@ __pycache__
 /SimpleEnv/octo_collect/
 /SimpleEnv/wandb/
 
+official_openvla/
+
+wandb/
+
+mp_collect/
+octo_collect/

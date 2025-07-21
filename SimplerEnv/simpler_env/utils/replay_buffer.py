@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 class SeparatedReplayBuffer(object):
-    def __init__(self, all_args, obs_dim, act_dim):
+    def __init__(self, all_args, obs_dim, act_chunck, act_dim):
         self.ep_len = all_args.episode_len
         self.num_env = all_args.num_envs
         self.gamma = all_args.buffer_gamma
@@ -14,22 +14,24 @@ class SeparatedReplayBuffer(object):
         self.instruction = [""] * self.num_env
         self.value_preds = np.zeros((self.ep_len + 1, self.num_env, 1), dtype=np.float32)
         self.returns = np.zeros((self.ep_len, self.num_env, 1), dtype=np.float32)
-        self.actions = np.zeros((self.ep_len, self.num_env, act_dim), dtype=np.int32)
-        self.action_log_probs = np.zeros((self.ep_len, self.num_env, act_dim), dtype=np.float32)
+        self.actions = np.zeros((self.ep_len, self.num_env, act_chunck, act_dim), dtype=np.int32)
+        self.action_log_probs = np.zeros((self.ep_len, self.num_env, 1), dtype=np.float32)
         self.rewards = np.zeros((self.ep_len, self.num_env, 1), dtype=np.float32)
         self.masks = np.ones((self.ep_len + 1, self.num_env, 1), dtype=np.float32)
+        self.generated_ids = np.zeros((self.ep_len, self.num_env, act_chunck, act_dim), dtype=np.int32)
 
         self.advantages = np.zeros((self.ep_len, self.num_env, 1), dtype=np.float32)
 
         self.step = 0
 
-    def insert(self, obs, actions, action_log_probs, value_preds, rewards, masks):
+    def insert(self, obs, actions, action_log_probs, value_preds, rewards, masks, generated_ids):
         self.obs[self.step + 1] = obs.copy()
         self.actions[self.step] = actions.copy()
         self.action_log_probs[self.step] = action_log_probs.copy()
         self.value_preds[self.step] = value_preds.copy()
         self.rewards[self.step] = rewards.copy()
         self.masks[self.step + 1] = masks.copy()
+        self.generated_ids[self.step] = generated_ids.copy()
 
         self.step = (self.step + 1) % self.ep_len
 
@@ -102,17 +104,19 @@ class SeparatedReplayBuffer(object):
         sampler = [rand[i * self.buffer_minibatch:(i + 1) * self.buffer_minibatch] for i in range(num_mini_batch)]
 
         obs = self.obs[:-1].reshape(-1, *self.obs.shape[2:])
-        actions = self.actions.reshape(-1, self.actions.shape[-1])
+        actions = self.actions.reshape(-1, *self.actions.shape[2:])
         value_preds = self.value_preds[:-1].reshape(-1, 1)
         returns = self.returns.reshape(-1, 1)
         masks = self.masks[:-1].reshape(-1, 1)
         action_logits = self.action_log_probs.reshape(-1, self.action_log_probs.shape[-1])
         advantages = self.advantages.reshape(-1, 1)
+        generated_ids = self.generated_ids.reshape(-1, *self.generated_ids.shape[2:])
 
         for indices in sampler:
             # obs size [T+1 N Dim]-->[T N Dim]-->[T*N,Dim]-->[index,Dim]
             obs_batch = obs[indices]
             actions_batch = actions[indices]
+            generated_ids_batch = generated_ids[indices]
             value_preds_batch = value_preds[indices]
             return_batch = returns[indices]
             masks_batch = masks[indices]
@@ -123,5 +127,5 @@ class SeparatedReplayBuffer(object):
             instruct_indices = indices % n_rollout_threads
             instruct_batch = [self.instruction[i] for i in instruct_indices]
 
-            yield (obs_batch, instruct_batch, actions_batch, value_preds_batch, return_batch, masks_batch,
+            yield (obs_batch, instruct_batch, actions_batch, generated_ids_batch, value_preds_batch, return_batch, masks_batch,
                    old_action_logits_batch, adv_targ)

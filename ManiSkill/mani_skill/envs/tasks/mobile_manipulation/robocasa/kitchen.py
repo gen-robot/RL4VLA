@@ -1,6 +1,7 @@
 from copy import deepcopy
 from typing import Dict
 
+import os
 import numpy as np
 import sapien
 import torch
@@ -20,7 +21,9 @@ from mani_skill.utils.scene_builder.robocasa.utils.placement_samplers import (
 )
 from mani_skill.utils.structs.pose import Pose
 from mani_skill.utils.structs.types import GPUMemoryConfig, SimConfig
-
+from mani_skill.utils.scene_builder.robocasa.utils.scene_utils import ROBOCASA_ASSET_DIR
+from mani_skill.envs.tasks.digital_twins.bridge_dataset_eval.base_env import BRIDGE_DATASET_ASSET_PATH, \
+    WidowX250SBridgeDatasetFlatTable
 
 @register_env(
     "RoboCasaKitchen-v1", max_episode_steps=100, asset_download_ids=["RoboCasa"]
@@ -159,7 +162,7 @@ class RoboCasaKitchenEnv(BaseEnv):
     def __init__(
         self,
         *args,
-        robot_uids="fetch",
+        robot_uids="windowx",
         env_configuration="default",
         controller_configs=None,
         gripper_types="default",
@@ -242,6 +245,8 @@ class RoboCasaKitchenEnv(BaseEnv):
         ### code from original robocasa env class ###
         self._ep_meta = {}
         self.fixtures_only = fixtures_only
+        if robot_uids == "windowx":
+            robot_uids = WidowX250SBridgeDatasetFlatTable
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
     @property
@@ -264,7 +269,7 @@ class RoboCasaKitchenEnv(BaseEnv):
         )
 
     @property
-    def _default_viewer_camera_config(self):
+    def _default_viewer_camera_configs(self):
         return CameraConfig(
             uid="viewer",
             pose=sapien.Pose([0, 0, 1]),
@@ -315,7 +320,7 @@ class RoboCasaKitchenEnv(BaseEnv):
                         mjcf_path = cfg["info"]["mjcf_path"]
                         # replace with correct base path
                         new_base_path = os.path.join(
-                            robocasa.models.assets_root, "objects"
+                            ROBOCASA_ASSET_DIR, "objects"
                         )
                         new_path = os.path.join(
                             new_base_path, mjcf_path.split("/objects/")[-1]
@@ -562,3 +567,22 @@ class RoboCasaKitchenEnv(BaseEnv):
             max_size=max_size,
             object_scale=object_scale,
         )
+    
+    def get_language_instruction(self):
+        instruct = []
+        for idx in range(self.num_envs):
+            instruct.append(f"put the item on plate") # TODO TODO TODO
+
+        return instruct
+    
+    # def _get_obj_cfgs(self):
+    #     """
+    #     Returns a list of object configurations to use in the environment.
+    #     The object configurations are usually environment-specific and should
+    #     be implemented in the subclass.
+
+    #     Returns:
+    #         list: list of object configurations
+    #     """
+
+    #     return []
