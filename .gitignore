@@ -26,3 +26,5 @@ wandb/
 
 mp_collect/
 octo_collect/
+
+checkpoints/
